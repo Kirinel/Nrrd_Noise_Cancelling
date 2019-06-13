@@ -6,6 +6,11 @@
 #include <unistd.h>
 #include <math.h>
 
+#define BLURY  80
+#define BLURX  80
+#define PASS1  5.5
+#define PASS2  1.9
+
 void mean_sd_from_list(char *basePath) {
 	char meanname[]="mean.nrrd", sdname[] = "sd.nrrd" ,*err;
     DIR *dir;
@@ -14,7 +19,7 @@ void mean_sd_from_list(char *basePath) {
  
     int first = 1;
     Nrrd* nmean = nrrdNew();
-    Nrrd* nsd = nrrdNew();
+    Nrrd* nstd = nrrdNew();
     int count = 0;
     unsigned long sx, sy, sc, sz;
     double* meanVal;
@@ -124,12 +129,12 @@ void mean_sd_from_list(char *basePath) {
 		// if it is the first file, initialize the output nrrd
 		if(first) {
 			const size_t sizes[3] = {sx, sy, sc};
-			nrrdAlloc_nva(nsd, nrrdTypeDouble, 3, sizes);
+			nrrdAlloc_nva(nstd, nrrdTypeDouble, 3, sizes);
 			first = 0;
 		}
 
 		// calculate the sum of the square of the difference
-		sdVal = (double*)nsd->data;
+		sdVal = (double*)nstd->data;
   		unsigned short* data = (unsigned short*)(nin->data);
   		for(int i = 0; i < sx; i++) {
 		 	for(int j = 0; j < sy; j++) {
@@ -157,7 +162,7 @@ void mean_sd_from_list(char *basePath) {
 	  	}
 	}
 
-	if (nrrdSave(sdname, nsd, NULL)) {
+	if (nrrdSave(sdname, nstd, NULL)) {
 	    err = biffGetDone(NRRD);
 	    fprintf(stderr, "trouble writing \"%s\":\n%s", sdname, err);
 	    free(err);
@@ -169,7 +174,7 @@ void mean_sd_from_list(char *basePath) {
 
 
 
-int nrrd_scale(Nrrd *nin, Nrrd *nout, double scale) {
+int nrrd_scale(Nrrd *nout, Nrrd *nin, double scale) {
 	unsigned long sx, sy, sc;
 	sx = nin->axis[0].size, sy = nin->axis[1].size, sc = nin->axis[2].size;
 	const size_t sizes[3] = {sx, sy, sc};
@@ -186,7 +191,7 @@ int nrrd_scale(Nrrd *nin, Nrrd *nout, double scale) {
 	return 0;
 }
 
-int nrrd_1op(Nrrd *nin, Nrrd *nout, char nop) {
+int nrrd_1op(Nrrd *nout, Nrrd *nin, char nop) {
 	char *err;
 	int op = ('r' == nop ? nrrdUnaryOpReciprocal :
 				('e' == nop ? nrrdUnaryOpExp :
@@ -206,7 +211,7 @@ int nrrd_1op(Nrrd *nin, Nrrd *nout, char nop) {
 	return 0;
 }
 
-int nrrd_2op(Nrrd *nin1, Nrrd *nin2, Nrrd *nout, char nop) {
+int nrrd_2op(Nrrd *nout, Nrrd *nin1, Nrrd *nin2, char nop) {
 	char * err;
 	int op = ('p' == nop ? nrrdBinaryOpAdd :
 				('m' == nop ? nrrdBinaryOpSubtract :
@@ -258,52 +263,258 @@ int nrrd_blur(Nrrd *nout, Nrrd *nin, const double bx, const double by, double cu
 
 
 int main() {
-    char basePath[1000];
+    // char basePath[1000];
 
-    ///get the current absoulte path
-    memset(basePath,'\0',sizeof(basePath));
-    getcwd(basePath, 999);
-    printf("the current dir is : %s\n",basePath);
+    // ///get the current absoulte path
+    // memset(basePath,'\0',sizeof(basePath));
+    // getcwd(basePath, 999);
+    // printf("the current dir is : %s\n",basePath);
 
-    ///get the file list
-    memset(basePath,'\0',sizeof(basePath));
-    strcpy(basePath,"./data");
-    mean_sd_from_list(basePath);
+    // ///get the file list
+    // memset(basePath,'\0',sizeof(basePath));
+    // strcpy(basePath,"./data");
+    // mean_sd_from_list(basePath);
 
-	
-    Nrrd *nin1, *nin2, *nout;
+    
     char *err;
-    char *in = "mean.nrrd";
-    nin1 = nrrdNew();
-    if (nrrdLoad(nin1, in, NULL)) {
+    char *meanPath = "./mean_sd_nrrd/mean.nrrd";
+    char *sdPath = "./mean_sd_nrrd/sd.nrrd";
+    Nrrd *nmean = nrrdNew();
+    if (nrrdLoad(nmean, meanPath, NULL)) {
 		err = biffGetDone(NRRD);
-		fprintf(stderr, "trouble reading \"%s\":\n%s", in, err);
-		nrrdNuke(nin1);
+		fprintf(stderr, "trouble reading \"%s\":\n%s", meanPath, err);
+		nrrdNuke(nmean);
 		free(err);
 		return 1;
 	}
-    nin2 = nrrdNew();
-	if (nrrdLoad(nin2, in, NULL)) {
+
+
+	/*
+	unu resample -b weight -i mean.nrrd  -s = x1 = -k gauss:$BLURY,4 -o blury.nrrd;
+   unu resample -b weight -i blury.nrrd -s x1 = = -k gauss:$PASS1,4 | unu 2op - blury.nrrd - | unu 2op - mean.nrrd - -o mean-loX.nrrd
+   unu resample -b weight -i mean.nrrd -s x1 = = -k gauss:$BLURX,4 -o blurx.nrrd;
+   
+   doint this: unu resample -b weight -i blurx.nrrd -s = x1 = -k gauss:$PASS1,4 | unu 2op - blurx.nrrd - | unu 2op - mean-loX.nrrd - -o mean-loXloY.nrrd
+   unu resample -b weight -i mean-loXloY.nrrd -s x1 x1 = -k gauss:$PASS2,4 -o mean-lo.nrrd
+   unu 2op - mean.nrrd mean-lo.nrrd -o mean-noise.nrrd
+	*/
+
+
+// unu resample -b weight -i mean.nrrd  -s = x1 = -k gauss:$BLURY,4 -o blury.nrrd;
+   	Nrrd *meanBlury = nrrdNew();
+   	char *meanBluryPath = "./results/meanBlury.nrrd";
+	if(nrrd_blur(meanBlury, nmean, 0, BLURY, 4)
+		| nrrdSave(meanBluryPath, meanBlury, NULL)) {
 		err = biffGetDone(NRRD);
-		fprintf(stderr, "trouble reading \"%s\":\n%s", in, err);
-		nrrdNuke(nin2);
-		free(err);
-		return 1;
-	}
-	
-    nout = nrrdNew();
-
-	nrrd_2op(nin1, nin2, nout, 'm');
-
-
-	if(nrrdSave("2op_test.nrrd", nout, NULL)) {
-		err = biffGetDone(NRRD);
-	    fprintf(stderr, "trouble writing :\n%s", err);
+	    fprintf(stderr, "trouble doing bluring or saving %s :\n%s", meanBluryPath, err);
+	    nrrdNuke(meanBlury);
 	    free(err);
 	    return 1;
 	}
-	nrrdNuke(nout);
-	nrrdNuke(nin1);
-	nrrdNuke(nin2);
+
+// unu resample -b weight -i blury.nrrd -s x1 = = -k gauss:$PASS1,4 | unu 2op - blury.nrrd - | unu 2op - mean.nrrd - -o mean-loX.nrrd
+	Nrrd *temp1 = nrrdNew();
+	Nrrd *temp2 = nrrdNew();
+	Nrrd *mean_loX = nrrdNew();
+	char *meanloxPath = "./results/mean-loX.nrrd";
+
+	if(nrrd_blur(temp1, meanBlury, PASS1, 0, 4)
+		| nrrd_2op(temp2, meanBlury, temp1, 'm')
+		| nrrd_2op(mean_loX, nmean, temp2, 'm')
+		| nrrdSave(meanloxPath, mean_loX, NULL)) {
+		err = biffGetDone(NRRD);
+	    fprintf(stderr, "trouble calculating meanloX or saving %s :\n%s", meanloxPath, err);
+	    nrrdNuke(temp1);
+	    nrrdNuke(temp2);
+	    nrrdNuke(mean_loX);
+	    free(err);
+	    return 1;
+	}
+
+// unu resample -b weight -i mean.nrrd -s x1 = = -k gauss:$BLURX,4 -o blurx.nrrd;
+	Nrrd *meanBlurx = nrrdNew();
+	char *meanBlurxPath = "./results/meanBlurx.nrrd";
+	if(nrrd_blur(meanBlurx, nmean, BLURX, 0, 4)
+		| nrrdSave(meanBlurxPath, meanBlurx, NULL)) {
+		err = biffGetDone(NRRD);
+	    fprintf(stderr, "trouble doing bluring or saving %s :\n%s", meanBlurxPath, err);
+	    nrrdNuke(meanBlurx);
+	    free(err);
+	    return 1;
+	}
+
+// unu resample -b weight -i blurx.nrrd -s = x1 = -k gauss:$PASS1,4 | unu 2op - blurx.nrrd - | unu 2op - mean-loX.nrrd - -o mean-loXloY.nrrd
+	Nrrd *mean_loXloY = nrrdNew();
+	char *meanloxloyPath = "./results/mean-loXloY.nrrd";
+	if(nrrd_blur(temp1, meanBlurx, 0, PASS1, 4)
+		| nrrd_2op(temp2, meanBlurx, temp1, 'm')
+		| nrrd_2op(mean_loXloY, mean_loX, temp2, 'm')
+		| nrrdSave(meanloxloyPath, mean_loXloY, NULL)) {
+		err = biffGetDone(NRRD);
+	    fprintf(stderr, "trouble calculating meanloXloY or saving %s :\n%s", meanloxloyPath, err);
+	    nrrdNuke(temp1);
+	    nrrdNuke(temp2);
+	    nrrdNuke(mean_loXloY);
+	    free(err);
+	    return 1;
+	}
+
+// unu resample -b weight -i mean-loXloY.nrrd -s x1 x1 = -k gauss:$PASS2,4 -o mean-lo.nrrd
+	Nrrd *mean_lo = nrrdNew();
+	char *meanloPath = "./results/mean-lo.nrrd";
+	if(nrrd_blur(mean_lo, mean_loXloY, PASS2, PASS2, 4)
+		| nrrdSave(meanloPath, mean_lo, NULL)) {
+		err = biffGetDone(NRRD);
+	    fprintf(stderr, "trouble calculating or saving %s :\n%s", meanloPath, err);
+	    nrrdNuke(mean_lo);
+	    free(err);
+	    return 1;
+	}
+
+// unu 2op - mean.nrrd mean-lo.nrrd -o mean-noise.nrrd
+	Nrrd *mean_noise = nrrdNew();
+	char *meannoisePath = "./results/mean-noise.nrrd";
+	if(nrrd_2op(mean_noise, nmean, mean_lo, 'm')
+		| nrrdSave(meannoisePath, mean_noise, NULL)) {
+		err = biffGetDone(NRRD);
+	    fprintf(stderr, "trouble calculating or saving %s :\n%s", meannoisePath, err);
+	    nrrdNuke(mean_noise);
+	    free(err);
+	    return 1;
+	}
+
+
+
+    Nrrd *nstd = nrrdNew();
+	if (nrrdLoad(nstd, sdPath, NULL)) {
+		err = biffGetDone(NRRD);
+		fprintf(stderr, "trouble reading \"%s\":\n%s", sdPath, err);
+		nrrdNuke(nstd);
+		free(err);
+		return 1;
+	}
+
+	
+	// unu 1op log -o logstd.nrrd
+	Nrrd *logstd = nrrdNew();
+	char *logstdPath = "./results/logstd.nrrd";
+	if(nrrd_1op(logstd, nstd, 'l')
+		| nrrdSave(logstdPath, logstd, NULL)) {
+		err = biffGetDone(NRRD);
+		fprintf(stderr, "trouble calculating logstd or saving \"%s\":\n%s", logstdPath, err);
+		nrrdNuke(logstd);
+		free(err);
+		return 1;
+	}
+
+ //   	unu resample -b weight -i logstd.nrrd     -s = x1 = -k gauss:$BLURY,4 -o blury.nrrd
+	Nrrd *logstdBlury = nrrdNew();
+	char *logstdbluryPath = "./results/logBlury.nrrd";
+	if(nrrd_blur(logstdBlury, logstd, 0, BLURY, 4)
+		| nrrdSave(logstdbluryPath, logstdBlury, NULL)) {
+		err = biffGetDone(NRRD);
+		fprintf(stderr, "trouble calculating logblury or saving \"%s\":\n%s", logstdbluryPath, err);
+		nrrdNuke(logstdBlury);
+		free(err);
+		return 1;
+	}
+
+ //   	unu resample -b weight -i blury.nrrd -s x1 = = -k gauss:$PASS1,4 | unu 2op - blury.nrrd - | unu 2op - logstd.nrrd - -o logstd-loX.nrrd
+	Nrrd *logstd_loX = nrrdNew();
+	char *logstdloxPath = "./results/logstd-loX.nrrd";
+	if(nrrd_blur(temp1, logstdBlury, PASS1, 0, 4)
+		| nrrd_2op(temp2, logstdBlury, temp1, 'm')
+		| nrrd_2op(logstd_loX, logstd, temp2, 'm')
+		| nrrdSave(logstdloxPath, logstd_loX, NULL)) {
+		err = biffGetDone(NRRD);
+		fprintf(stderr, "trouble calculating logstdlox or saving \"%s\":\n%s", logstdloxPath, err);
+		nrrdNuke(logstd_loX);
+		nrrdNuke(temp1);
+		nrrdNuke(temp2);
+		free(err);
+		return 1;
+	}
+
+ //   	unu resample -b weight -i logstd.nrrd -s x1 = = -k gauss:$BLURX,4 -o blurx.nrrd
+	Nrrd *logstdBlurx = nrrdNew();
+	char *logstdblurxPath = "./results/logBlurx.nrrd";
+	if(nrrd_blur(logstdBlurx, logstd, 0, BLURX, 4)
+		| nrrdSave(logstdblurxPath, logstdBlurx, NULL)) {
+		err = biffGetDone(NRRD);
+		fprintf(stderr, "trouble calculating logblurx or saving \"%s\":\n%s", logstdblurxPath, err);
+		nrrdNuke(logstdBlurx);
+		free(err);
+		return 1;
+	}
+
+ //   	unu resample -b weight -i blurx.nrrd -s = x1 = -k gauss:$PASS1,4 | unu 2op - blurx.nrrd - | unu 2op - logstd-loX.nrrd - -o logstd-loXloY.nrrd
+	Nrrd *logstd_loXloY = nrrdNew();
+	char *logstdloxloyPath = "./results/logstd-loXloY.nrrd";
+	if(nrrd_blur(temp1, logstdBlurx, 0, PASS1, 4)
+		| nrrd_2op(temp2, logstdBlurx, temp1, 'm')
+		| nrrd_2op(logstd_loXloY, logstd_loX, temp2, 'm')
+		| nrrdSave(logstdloxloyPath, logstd_loXloY, NULL)) {
+		err = biffGetDone(NRRD);
+		fprintf(stderr, "trouble calculating logstdloxloy or saving \"%s\":\n%s", logstdloxloyPath, err);
+		nrrdNuke(logstd_loXloY);
+		nrrdNuke(temp1);
+		nrrdNuke(temp2);
+		free(err);
+		return 1;
+	}
+
+ //   	unu resample -b weight -i logstd-loXloY.nrrd -s x1 x1 = -k gauss:$PASS2,4 -o logstd-lo.nrrd
+	Nrrd *logstd_lo = nrrdNew();
+	char *logstdloPath = "./results/logstd-lo.nrrd";
+	if(nrrd_blur(logstd_lo, logstd_loXloY, PASS2, PASS2, 4)
+		| nrrdSave(logstdloPath, logstd_lo, NULL)) {
+		err = biffGetDone(NRRD);
+	    fprintf(stderr, "trouble calculating or saving %s :\n%s", logstdloPath, err);
+	    nrrdNuke(logstd_lo);
+	    free(err);
+	    return 1;
+	}
+
+ //   	unu 2op - logstd.nrrd logstd-lo.nrrd -o logstd-noise.nrrd
+	Nrrd *logstd_noise = nrrdNew();
+	char *logstdnoisePath = "./results/logstd-noise.nrrd";
+	if(nrrd_2op(logstd_noise, logstd, logstd_lo, 'm')
+		| nrrdSave(logstdnoisePath, logstd_noise, NULL)) {
+		err = biffGetDone(NRRD);
+	    fprintf(stderr, "trouble calculating or saving %s :\n%s", logstdnoisePath, err);
+	    nrrdNuke(logstd_noise);
+	    free(err);
+	    return 1;
+	}
+
+ //   	unu 1op exp -i logstd-noise.nrrd
+ //   	unu 1op r -o scale-hi.nrrd
+	Nrrd *scale_hi = nrrdNew();
+	char *scalehiPath = "./results/scale-hi.nrrd";
+	if(nrrd_1op(temp1, logstd_noise, 'e')
+		| nrrd_1op(scale_hi, temp1, 'r')
+		| nrrdSave(scalehiPath, scale_hi, NULL)) {
+		err = biffGetDone(NRRD);
+	    fprintf(stderr, "trouble calculating or saving %s :\n%s", scalehiPath, err);
+	    nrrdNuke(scale_hi);
+	    free(err);
+	    return 1;
+	}
+
+	Nrrd *std_noise_canceled = nrrdNew();
+	char *stdncanceledPath = "./results/std-noise-canceled.nrrd";
+	if(nrrd_2op(std_noise_canceled, nstd, scale_hi, 'm')
+		| nrrdSave(stdncanceledPath, std_noise_canceled, NULL)) {
+		err = biffGetDone(NRRD);
+	    fprintf(stderr, "trouble calculating or saving %s :\n%s", stdncanceledPath, err);
+	    nrrdNuke(std_noise_canceled);
+	    free(err);
+	    return 1;
+	}
+
+	
+
+
+
 	return 0;
 }
